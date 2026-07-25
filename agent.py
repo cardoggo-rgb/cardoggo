@@ -118,6 +118,52 @@ def pick_topic(state, existing_titles):
     return topic, category
 
 
+WP_CATEGORIES = [
+    "Blog", "Car Buying Tips", "Car Comparisons", "Car Maintenance and Repair",
+    "Car Reviews", "Cars", "Classic Cars", "Electric and Hybrid Vehicles",
+    "Latest", "Trending", "US Market",
+]
+
+
+def find_trending_topic(existing_titles):
+    """Asks Claude to search for a genuinely current automotive news/trend angle
+    and propose one fresh topic. Returns (topic, category) or None if it can't
+    confidently produce one (caller should fall back to the fixed TOPIC_POOL)."""
+    already_covered = "\n".join(f"- {t}" for t in existing_titles[:60]) or "(none yet)"
+    prompt = (
+        "Search the web for what's currently trending or newsworthy in the automotive "
+        "industry today -- new model launches, industry news, EV developments, recalls, "
+        "buying-advice angles tied to current events, etc. Then propose ONE specific, "
+        "fresh blog post topic for an automotive blog (CarDoggo) that a reader would "
+        "want to click on right now.\n\n"
+        f"Do NOT propose a topic that duplicates or closely overlaps any of these "
+        f"already-published posts:\n{already_covered}\n\n"
+        f"Pick the best-fitting category from this exact list: {', '.join(WP_CATEGORIES)}.\n\n"
+        "Respond with ONLY these two lines, nothing else:\n"
+        "TOPIC: <the topic, phrased as a headline-style blog post title>\n"
+        "CATEGORY: <one category from the list above, exactly as written>"
+    )
+    try:
+        data = _call_claude([{"role": "user", "content": prompt}], max_tokens=2000)
+        text = "\n".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
+        topic_m = re.search(r"^TOPIC:\s*(.+)$", text, re.MULTILINE)
+        cat_m = re.search(r"^CATEGORY:\s*(.+)$", text, re.MULTILINE)
+        if not topic_m or not cat_m:
+            log("Trending-topic search didn't return a clean result, falling back to topic list.")
+            return None
+        topic = topic_m.group(1).strip()
+        category = cat_m.group(1).strip()
+        if category not in WP_CATEGORIES:
+            category = "Blog"  # safe default if the model picks something off-list
+        if topic in existing_titles:
+            log("Trending-topic search proposed a duplicate, falling back to topic list.")
+            return None
+        return topic, category
+    except Exception as e:
+        log(f"Trending-topic search failed ({e}), falling back to fixed topic list.")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # WordPress REST API client
 # ---------------------------------------------------------------------------
@@ -209,7 +255,7 @@ class WordPressClient:
             )
         return media_id
 
-    def create_post(self, title, content_html, category_ids, tag_ids, featured_media, status):
+    def create_post(self, title, content_html, category_ids, tag_ids, featured_media, status, meta_description=None):
         payload = {
             "title": title,
             "content": content_html,
@@ -219,6 +265,11 @@ class WordPressClient:
         }
         if featured_media:
             payload["featured_media"] = featured_media
+        if meta_description:
+            # Requires the Yoast REST-exposure snippet from README/YOAST_SEO_SETUP.md.
+            # If that snippet isn't installed, WordPress just silently ignores this key --
+            # harmless either way, so it's safe to always send it.
+            payload["meta"] = {"_yoast_wpseo_metadesc": meta_description}
         r = requests.post(f"{self.api}/posts", headers=self.headers, json=payload, timeout=60)
         r.raise_for_status()
         return r.json()
@@ -418,8 +469,17 @@ def main():
 
     state = load_state()
     existing_titles = wp.get_recent_titles() if wp else []
-    topic, category_name = pick_topic(state, existing_titles)
-    log(f"Selected topic: {topic}  (category: {category_name})")
+
+    log("Checking what's currently trending in the auto industry...")
+    trending = find_trending_topic(existing_titles)
+    if trending:
+        topic, category_name = trending
+        state["used_topics"].append(topic)
+        save_state(state)
+        log(f"Using trending topic: {topic}  (category: {category_name})")
+    else:
+        topic, category_name = pick_topic(state, existing_titles)
+        log(f"Using fallback topic: {topic}  (category: {category_name})")
 
     log("Generating article with Claude...")
     article = generate_article(topic)
@@ -451,6 +511,7 @@ def main():
         tag_ids=tag_ids,
         featured_media=featured_media_id,
         status=PUBLISH_STATUS,
+        meta_description=article.get("meta_description"),
     )
     log(f"Post created: {post.get('link', post.get('id'))} (status: {PUBLISH_STATUS})")
 
