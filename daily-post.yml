@@ -41,5 +41,13 @@ jobs:
           git config user.name "cardoggo-agent"
           git config user.email "actions@github.com"
           git add state.json
-          git diff --quiet --cached || git commit -m "Update used topics [skip ci]"
-          git push
+          if git diff --quiet --cached; then
+            echo "No state.json changes to save."
+            exit 0
+          fi
+          git commit -m "Update used topics [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push && break
+            echo "Push failed (attempt $i), retrying..."
+            sleep 5
+          done
