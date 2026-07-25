@@ -274,7 +274,7 @@ def generate_article(topic):
             raw = raw.split("\n", 1)[1]
 
     try:
-        article = json.loads(raw)
+        article = json.loads(raw, strict=False)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Could not parse article JSON from model output: {e}\n---\n{raw[:2000]}")
 
