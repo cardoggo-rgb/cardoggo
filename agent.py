@@ -14,6 +14,7 @@ Configuration lives in a .env file (see .env.example).
 """
 
 import os
+import re
 import sys
 import json
 import socket
@@ -266,12 +267,16 @@ def generate_article(topic):
 
     text_parts = [block["text"] for block in data.get("content", []) if block.get("type") == "text"]
     raw = "\n".join(text_parts).strip()
-    # Strip stray markdown fences if the model added them despite instructions
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw
-        if raw.lower().startswith("json"):
-            raw = raw.split("\n", 1)[1]
+
+    # The model sometimes adds a stray sentence or code fence around the JSON
+    # despite instructions not to. Extract the JSON object robustly: prefer
+    # the contents of a ```json ... ``` or ``` ... ``` fence if present,
+    # otherwise fall back to the first '{' through the last '}'.
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", raw, re.DOTALL)
+    if fence_match:
+        raw = fence_match.group(1)
+    elif "{" in raw and "}" in raw:
+        raw = raw[raw.find("{"): raw.rfind("}") + 1]
 
     try:
         article = json.loads(raw, strict=False)
