@@ -249,6 +249,8 @@ def generate_article(topic):
         },
         timeout=120,
     )
+    if r.status_code != 200:
+        log(f"Anthropic API error {r.status_code}: {r.text}")
     r.raise_for_status()
     data = r.json()
 
