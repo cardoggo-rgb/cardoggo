@@ -1,0 +1,43 @@
+name: CarDoggo Daily Post
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the agent
+        env:
+          WP_BASE_URL: https://cardoggo.com
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: claude-sonnet-5
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PUBLISH_STATUS: ${{ vars.PUBLISH_STATUS || 'draft' }}
+        run: python agent.py
+
+      - name: Save topic memory back to the repo
+        run: |
+          git config user.name "cardoggo-agent"
+          git config user.email "actions@github.com"
+          git add state.json
+          git diff --quiet --cached || git commit -m "Update used topics [skip ci]"
+          git push
