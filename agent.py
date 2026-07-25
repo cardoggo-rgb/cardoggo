@@ -16,6 +16,7 @@ Configuration lives in a .env file (see .env.example).
 import os
 import sys
 import json
+import socket
 import base64
 import random
 import argparse
@@ -23,6 +24,15 @@ import datetime
 from pathlib import Path
 
 import requests
+import urllib3.util.connection as urllib3_cn
+
+# GitHub Actions runners sometimes can't route IPv6, but some hosts (like
+# cardoggo.com) return an IPv6 address first. Force IPv4-only DNS resolution
+# so we don't hit "Network is unreachable" errors.
+def _allowed_gai_family():
+    return socket.AF_INET
+
+urllib3_cn.allowed_gai_family = _allowed_gai_family
 
 try:
     from dotenv import load_dotenv
