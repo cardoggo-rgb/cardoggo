@@ -239,7 +239,9 @@ def generate_article(topic):
         '  "title": a punchy SEO-friendly headline (not identical to the prompt topic, improve it)\n'
         '  "meta_description": 1 sentence, under 160 characters\n'
         '  "content_html": the full article body as clean HTML using <p>, <h2>, <h3>, <ul>/<li> '
-        "as appropriate. 500-900 words. No <html>/<body> wrapper, no title heading repeated as h1.\n"
+        "as appropriate. 500-900 words. No <html>/<body> wrapper, no title heading repeated as h1. "
+        "Plain prose only -- do NOT include <cite> tags, citation markers, footnotes, or any "
+        "source-attribution markup; write facts directly into the sentences instead.\n"
         '  "tags": an array of 3-6 relevant lowercase tag strings\n'
         '  "image_query": a short (2-5 word) search phrase for a stock photo that would suit '
         "this article, e.g. \"electric car charging\"\n"
@@ -253,17 +255,23 @@ def generate_article(topic):
         },
         json={
             "model": ANTHROPIC_MODEL,
-            "max_tokens": 4000,
+            "max_tokens": 8000,
             "system": system_prompt,
             "messages": [{"role": "user", "content": f"Write today's article. Topic: {topic}"}],
             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
         },
-        timeout=120,
+        timeout=180,
     )
     if r.status_code != 200:
         log(f"Anthropic API error {r.status_code}: {r.text}")
     r.raise_for_status()
     data = r.json()
+
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError(
+            "Model response was cut off (hit max_tokens) before finishing the article. "
+            "Try raising max_tokens further in generate_article()."
+        )
 
     text_parts = [block["text"] for block in data.get("content", []) if block.get("type") == "text"]
     raw = "\n".join(text_parts).strip()
