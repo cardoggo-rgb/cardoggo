@@ -193,9 +193,22 @@ def main():
         log(f"  Meta: {fields['meta_description']}")
 
         if not args.dry_run:
-            wp.update_post_meta(post["id"], fields["keyphrase"], fields["meta_description"], fields["seo_title"])
-            log("  Saved.")
-            time.sleep(1)  # be gentle on both APIs
+            saved = False
+            for attempt in range(1, 3):  # try, then retry once after a longer pause
+                try:
+                    wp.update_post_meta(post["id"], fields["keyphrase"], fields["meta_description"], fields["seo_title"])
+                    saved = True
+                    break
+                except requests.exceptions.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else "?"
+                    if attempt == 1:
+                        log(f"  Save failed ({status}), waiting and retrying once...")
+                        time.sleep(8)
+                    else:
+                        log(f"  Save failed again ({status}) -- skipping this post, continuing with the rest.")
+            if saved:
+                log("  Saved.")
+            time.sleep(2)  # gentler pace to avoid tripping host rate-limiting
         else:
             log("  (dry run -- not saved)")
 
