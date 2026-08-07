@@ -136,6 +136,11 @@ def find_trending_topic(existing_titles):
         "buying-advice angles tied to current events, etc. Then propose ONE specific, "
         "fresh blog post topic for an automotive blog (CarDoggo) that a reader would "
         "want to click on right now.\n\n"
+        "Prefer topics with commercial/buying intent over pure informational ones when "
+        "both are reasonable -- e.g. 'Best X for Y', 'X vs Y: Which Should You Buy', "
+        "'X Buyer's Guide', or a specific model comparison, rather than generic "
+        "explainer content. These perform better in search and convert better for "
+        "readers who are actually shopping, not just curious.\n\n"
         f"Do NOT propose a topic that duplicates or closely overlaps any of these "
         f"already-published posts:\n{already_covered}\n\n"
         f"Pick the best-fitting category from this exact list: {', '.join(WP_CATEGORIES)}.\n\n"
@@ -174,13 +179,15 @@ class WordPressClient:
         token = base64.b64encode(f"{username}:{app_password}".encode()).decode()
         self.headers = {"Authorization": f"Basic {token}"}
 
-    def get_recent_titles(self, per_page=100, max_pages=3):
-        titles = []
+    def get_recent_posts(self, per_page=100, max_pages=3):
+        """Returns a list of {title, link} dicts for existing posts -- used both for
+        duplicate-topic checking and for picking internal links to include in new posts."""
+        posts = []
         for page in range(1, max_pages + 1):
             r = requests.get(
                 f"{self.api}/posts",
                 headers=self.headers,
-                params={"per_page": per_page, "page": page, "_fields": "title"},
+                params={"per_page": per_page, "page": page, "_fields": "title,link"},
                 timeout=30,
             )
             if r.status_code != 200:
@@ -188,10 +195,10 @@ class WordPressClient:
             batch = r.json()
             if not batch:
                 break
-            titles.extend([p["title"]["rendered"] for p in batch])
+            posts.extend([{"title": p["title"]["rendered"], "link": p["link"]} for p in batch])
             if len(batch) < per_page:
                 break
-        return titles
+        return posts
 
     def get_or_create_category(self, name):
         r = requests.get(
@@ -255,7 +262,8 @@ class WordPressClient:
             )
         return media_id
 
-    def create_post(self, title, content_html, category_ids, tag_ids, featured_media, status, meta_description=None):
+    def create_post(self, title, content_html, category_ids, tag_ids, featured_media, status,
+                     meta_description=None, keyphrase=None):
         payload = {
             "title": title,
             "content": content_html,
@@ -265,11 +273,20 @@ class WordPressClient:
         }
         if featured_media:
             payload["featured_media"] = featured_media
+        # These require the Yoast REST-exposure snippet from YOAST_SEO_SETUP.md. If that
+        # snippet isn't installed, WordPress just silently ignores these keys -- harmless
+        # either way, so it's safe to always send them.
+        meta = {}
         if meta_description:
-            # Requires the Yoast REST-exposure snippet from README/YOAST_SEO_SETUP.md.
-            # If that snippet isn't installed, WordPress just silently ignores this key --
-            # harmless either way, so it's safe to always send it.
-            payload["meta"] = {"_yoast_wpseo_metadesc": meta_description}
+            meta["_yoast_wpseo_metadesc"] = meta_description
+        if keyphrase:
+            meta["_yoast_wpseo_focuskw"] = keyphrase
+            # Yoast's SEO-title field supports variables like %%sep%% %%sitename%%;
+            # keep it simple and just use the article title, which the prompt already
+            # requires to start with the keyphrase.
+            meta["_yoast_wpseo_title"] = title
+        if meta:
+            payload["meta"] = meta
         r = requests.post(f"{self.api}/posts", headers=self.headers, json=payload, timeout=60)
         r.raise_for_status()
         return r.json()
@@ -310,13 +327,41 @@ _SYSTEM_PROMPT = (
     "Once you're done researching, output the article using EXACTLY this plain-text format "
     "(no JSON, no markdown code fences, no <cite> tags or citation markers -- write facts "
     "directly into the sentences):\n\n"
-    "TITLE: <a punchy SEO-friendly headline>\n"
-    "META: <one sentence meta description, under 160 characters>\n"
+    "TITLE: <SEO title, MUST start with the exact KEYPHRASE below, under 60 characters total>\n"
+    "KEYPHRASE: <a short, specific 2-4 word focus keyphrase this article should rank for, "
+    "e.g. 'certified pre-owned cars' or 'best budget SUVs 2026' -- pick something concrete "
+    "and not too generic, and don't reuse a keyphrase from a previous article>\n"
+    "META: <one sentence meta description that includes the exact KEYPHRASE, "
+    "strictly under 150 characters -- count carefully, this is a hard limit>\n"
     "TAGS: <3-6 lowercase tags, comma-separated>\n"
     "IMAGE_QUERY: <a short 2-5 word stock photo search phrase>\n"
     "---ARTICLE---\n"
-    "<the full 500-900 word article body as clean HTML, using <p>, <h2>, <h3>, <ul>/<li> as "
-    "appropriate. No <html>/<body> wrapper, no title heading repeated as h1.>\n"
+    "<the full 600-1000 word article body (including the FAQ section) as clean HTML, "
+    "using <p>, <h2>, <h3>, <ul>/<li> as appropriate. No <html>/<body> wrapper, no title "
+    "heading repeated as h1.\n\n"
+    "Write this so it's easy for both human readers, Yoast SEO's analysis, AND AI answer "
+    "engines (ChatGPT, Perplexity, Google AI Overviews) to parse and cite:\n"
+    "- Use the exact KEYPHRASE naturally in: the first paragraph, at least one H2/H3 "
+    "subheading, and a couple of times through the body -- but only where it reads "
+    "naturally, never forced or repeated unnaturally.\n"
+    "- Open with a direct 2-3 sentence answer to the core question in the very first "
+    "paragraph, including the keyphrase -- don't build up to it.\n"
+    "- Phrase most H2/H3 subheadings as real questions a reader would actually type "
+    "(e.g. 'Is a CPO car worth the extra cost?' rather than 'The CPO Premium').\n"
+    "- Immediately after each question-style heading, write one self-contained 40-60 "
+    "word paragraph that fully answers that specific question on its own, as plain "
+    "prose (not a blockquote or box) -- then follow with more supporting detail after.\n"
+    "- Keep sentences short: at least 80% of sentences under 20 words. Break up any "
+    "longer sentence into two rather than using a comma to join two ideas.\n"
+    "- Use active voice throughout (\"Toyota discontinued the model\" not \"the model was "
+    "discontinued by Toyota\") -- active voice should make up at least 90% of sentences.\n"
+    "- Include ONE genuine outbound link to a real, authoritative source relevant to "
+    "the topic (e.g. a manufacturer's official site, NHTSA, EPA fuel economy data, or "
+    "a specific news article you found while researching) as a normal <a href=\"URL\"> "
+    "link within the body text, where it naturally supports a specific claim.\n"
+    "- End the article with a short 'FAQ' section (<h2>FAQ</h2> followed by 3-4 "
+    "<h3>question</h3><p>direct answer</p> pairs) covering related questions a reader "
+    "might still have.>\n"
     "---END---\n\n"
     "You may write research notes or commentary before the TITLE: line if you need to think "
     "out loud -- that's fine, it will be discarded. But everything from TITLE: onward must "
@@ -332,12 +377,13 @@ def _extract_article(raw):
         return None
 
     title_m = re.search(r"^TITLE:\s*(.+)$", raw, re.MULTILINE)
+    keyphrase_m = re.search(r"^KEYPHRASE:\s*(.+)$", raw, re.MULTILINE)
     meta_m = re.search(r"^META:\s*(.+)$", raw, re.MULTILINE)
     tags_m = re.search(r"^TAGS:\s*(.+)$", raw, re.MULTILINE)
     image_m = re.search(r"^IMAGE_QUERY:\s*(.+)$", raw, re.MULTILINE)
     article_m = re.search(r"---ARTICLE---\s*\n(.*?)\n---END---", raw, re.DOTALL)
 
-    if not all([title_m, meta_m, tags_m, image_m, article_m]):
+    if not all([title_m, keyphrase_m, meta_m, tags_m, image_m, article_m]):
         return None
 
     content_html = article_m.group(1).strip()
@@ -346,6 +392,7 @@ def _extract_article(raw):
 
     return {
         "title": title_m.group(1).strip(),
+        "keyphrase": keyphrase_m.group(1).strip(),
         "meta_description": meta_m.group(1).strip(),
         "tags": [t.strip().lower() for t in tags_m.group(1).split(",") if t.strip()],
         "image_query": image_m.group(1).strip(),
@@ -353,10 +400,26 @@ def _extract_article(raw):
     }
 
 
-def generate_article(topic):
+def generate_article(topic, existing_posts=None):
     """Calls the Anthropic API (with web search) to research and write the post.
-    Automatically continues the generation if the response gets cut off mid-article."""
-    messages = [{"role": "user", "content": f"Write today's article. Topic: {topic}"}]
+    Automatically continues the generation if the response gets cut off mid-article.
+    If existing_posts (list of {title, link}) is provided, the model is asked to
+    naturally weave in 2-3 internal links to genuinely relevant ones."""
+    existing_posts = existing_posts or []
+    link_instructions = ""
+    if existing_posts:
+        # Cap the list length sent to the model to keep the prompt reasonable.
+        sample = existing_posts[:80]
+        link_list = "\n".join(f'- "{p["title"]}" -> {p["link"]}' for p in sample)
+        link_instructions = (
+            "\n\nHere are existing CarDoggo posts you can link to:\n"
+            f"{link_list}\n\n"
+            "Naturally weave in 2-3 <a href=\"URL\">anchor text</a> links to genuinely "
+            "relevant posts from that list, placed where they add real value to the "
+            "reader (not forced or random). If nothing on the list is genuinely "
+            "relevant, it's fine to include fewer links or none -- don't force it."
+        )
+    messages = [{"role": "user", "content": f"Write today's article. Topic: {topic}{link_instructions}"}]
 
     data = _call_claude(messages)
     text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
@@ -468,7 +531,8 @@ def main():
     wp = WordPressClient(WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD) if not args.dry_run else None
 
     state = load_state()
-    existing_titles = wp.get_recent_titles() if wp else []
+    existing_posts = wp.get_recent_posts() if wp else []
+    existing_titles = [p["title"] for p in existing_posts]
 
     log("Checking what's currently trending in the auto industry...")
     trending = find_trending_topic(existing_titles)
@@ -482,7 +546,7 @@ def main():
         log(f"Using fallback topic: {topic}  (category: {category_name})")
 
     log("Generating article with Claude...")
-    article = generate_article(topic)
+    article = generate_article(topic, existing_posts=existing_posts)
     log(f"Generated title: {article['title']}")
 
     log(f"Sourcing free image for query: {article['image_query']}")
@@ -512,6 +576,7 @@ def main():
         featured_media=featured_media_id,
         status=PUBLISH_STATUS,
         meta_description=article.get("meta_description"),
+        keyphrase=article.get("keyphrase"),
     )
     log(f"Post created: {post.get('link', post.get('id'))} (status: {PUBLISH_STATUS})")
 
